@@ -20,7 +20,6 @@ EXPOSE 8000
 
 # Define environment variable
 ENV PYTHONUNBUFFERED=1
-ENV PYTHONPATH=/app
 
 # Run server.py when the container launches
-CMD ["python", "api/server.py"]
+CMD ["python", "server.py"]

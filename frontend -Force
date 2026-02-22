@@ -1,0 +1,12 @@
+* [33mab9533d[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mvansh[m[33m)[m Update optimizer changes and restore files
+* [33mfa71973[m initial optimizer
+* [33m950dcd8[m[33m ([m[1;31morigin/vansh[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mmain[m[33m)[m Refactor: MonitoringAgent now a pure signal adapter with strict time determinism (removed detected_at default)
+* [33mcef5ae0[m Refactor: Implement strict domain architecture (enforce immutable state, deterministic timeline, and strict validation)
+* [33m395af86[m Refactor: Restructure into backend/frontend monorepo
+* [33mc095522[m Delete requirements.txt
+* [33m519a306[m Delete .gitignore
+* [33md5549ed[m Delete data directory
+* [33m2661172[m Delete backend directory
+* [33m4085419[m Update FastAPI main file and improve backend handling
+* [33maa2fb7f[m Update README.md
+* [33mb0cc74f[m Initial commit - Voyage Trip Companion

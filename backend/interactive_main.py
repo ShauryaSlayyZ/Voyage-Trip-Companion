@@ -4,19 +4,23 @@ import sys
 from datetime import datetime
 from typing import List
 
-# Fix path
+# Fix path to ensure we can import modules
 sys.path.append("e:/tbo")
 
-from infrastructure.event_bus import InfrastructureEventBus as EventBus
-from core.models import StateSnapshot, Itinerary, Task, TaskStatus
+from core.event_bus import EventBus
+from core.schema import SystemState, Itinerary, Task, TaskStatus
 from agents.state_agent import StateAgent
 from agents.monitoring_agent import MonitoringAgent
 from agents.reoptimization_agent import ReoptimizationAgent
 from agents.companion_agent import CompanionAgent
-from orchestrator.orchestrator import OrchestratorAgent
+from agents.orchestrator import OrchestratorAgent
 
+# --- OVERRIDE COMPANION FOR CLI INPUT ---
 class CLICompanionAgent(CompanionAgent):
     async def get_user_choice(self):
+        """
+        Real interactive input from the user in the terminal.
+        """
         while True:
             try:
                 choice = input("\n👉 Enter Option Number (1 or 2): ")
@@ -32,92 +36,85 @@ def load_itinerary(filepath="e:/tbo/itinerary.json") -> List[Task]:
         data = json.load(f)
         tasks = []
         for t in data:
-            # Map 'description' to 'title' if needed for legacy json
-            if "description" in t and "title" not in t:
-                t["title"] = t.pop("description")
-                
+            # Parse ISO strings back to datetime
             t["start_time"] = datetime.fromisoformat(t["start_time"])
             t["end_time"] = datetime.fromisoformat(t["end_time"])
-            if "status" in t:
-                t["status"] = TaskStatus(t["status"])
-            
             tasks.append(Task(**t))
         return tasks
 
 async def interactive_loop():
-    print("=== 🎮 Agentic System: Interactive Mode (Strict Domain) ===")
+    print("=== 🎮 Agentic System: Interactive Mode ===")
     
     bus = EventBus()
     tasks = load_itinerary()
     
+    # Init State
+    # Start time is set to the start of the first task - 30 mins
     start_time = tasks[0].start_time 
-    initial_snapshot = StateSnapshot(
+    
+    initial_state = SystemState(
         current_time=start_time,
         itinerary=Itinerary(tasks=tasks)
     )
     
-    state_agent = StateAgent(initial_snapshot)
-    monitor_agent = MonitoringAgent()
+    state_agent = StateAgent(bus, initial_state)
+    monitor_agent = MonitoringAgent(bus)
     planner_agent = ReoptimizationAgent()
-    companion_agent = CLICompanionAgent()
+    companion_agent = CLICompanionAgent() # Use our CLI version
     
-    orchestrator = OrchestratorAgent(bus, state_agent, monitor_agent, planner_agent, companion_agent)
+    orchestrator = OrchestratorAgent(bus, state_agent, planner_agent, companion_agent)
     
     print(f"✅ Loaded {len(tasks)} tasks.")
+    print(f"🕒 Current Time: {start_time.strftime('%Y-%m-%d %H:%M')}")
+    print("\ncommands: [step <mins>] [delay <mins>] [confirm <id>] [status] [quit]")
     
     while True:
-        await orchestrator.process_cycle()
-        
-        print("\n> ", end="", flush=True)
-        cmd_str = await asyncio.to_thread(sys.stdin.readline)
-        if not cmd_str: break
-        cmd_str = cmd_str.strip()
-        
+        # Simple blocking input for commands
+        # Note: In a real async app we'd use aioconsole, but for this prototype strict blocking is safer to avoid race conditions with logs.
+        cmd_str = await asyncio.to_thread(input, "\n> ")
         parts = cmd_str.split()
         if not parts: continue
+        
         cmd = parts[0].lower()
         
         try:
-            if cmd == "quit": break
+            if cmd == "quit":
+                break
+                
             elif cmd == "status":
-                s = state_agent.get_state_snapshot()
+                s = state_agent.get_state()
                 print(f"🕒 Time: {s.current_time.strftime('%H:%M')}")
                 for t in s.itinerary.tasks:
                     symbol = "⬜"
                     if t.status == TaskStatus.COMPLETED: symbol = "✅"
                     elif t.status == TaskStatus.ACTIVE: symbol = "▶️"
-                    elif t.status == TaskStatus.PLANNED: symbol = "⏳"
-                    print(f"{symbol} [{t.id}] {t.start_time.strftime('%H:%M')} {t.title} ({t.status})")
+                    elif t.status == TaskStatus.PENDING: symbol = "⏳"
                     
+                    print(f"{symbol} [{t.id}] {t.start_time.strftime('%H:%M')}-{t.end_time.strftime('%H:%M')} {t.description} ({t.status} {t.completion_type})")
+
             elif cmd == "step":
                 mins = int(parts[1]) if len(parts) > 1 else 30
-                state_agent.advance_time(mins)
+                await state_agent.advance_time(mins)
                 
             elif cmd == "confirm":
                 if len(parts) < 2:
-                     print("Usage: confirm <task_id>")
-                     continue
-                state_agent.confirm_task(parts[1])
+                    print("Usage: confirm <task_id>")
+                    continue
+                await state_agent.confirm_task(parts[1])
                 
-            elif cmd == "rollback":
-                if len(parts) < 2:
-                     print("Usage: rollback <task_id>")
-                     continue
-                state_agent.rollback_implicit(parts[1])
-                print(f"Task {parts[1]} rolled back to PLANNED.")
-
             elif cmd == "delay":
                  mins = int(parts[1]) if len(parts) > 1 else 30
-                 current_sim_time = state_agent.get_state_snapshot().current_time
-                 d = monitor_agent.detect_external_delay(None, mins, current_sim_time)
-                 await bus.publish("INJECT_DISRUPTION", d)
-                 print(f"Injected {mins}m delay.")
-                 await orchestrator.process_cycle()
+                 print(f"💥 Injecting {mins}m Traffic Delay...")
+                 await monitor_agent.inject_delay_event(mins)
+                 # Give async loop a moment to process the event chain
+                 await asyncio.sleep(0.5)
                  
             else:
                 print("Unknown command.")
+                
         except Exception as e:
             print(f"❌ Error: {e}")
 
 if __name__ == "__main__":
+    # Windows SelectorEventLoop policy fix if needed, but python 3.10+ usually handles it.
     asyncio.run(interactive_loop())
