@@ -15,14 +15,19 @@ from agents.reoptimization_agent import ReoptimizationAgent
 from agents.companion_agent import CompanionAgent
 from orchestrator.orchestrator import OrchestratorAgent
 
-sys.stdout = open("e:/tbo/execution.log", "w", encoding="utf-8")
+sys.stdout = open("e:/tbo/execution.log", "a", encoding="utf-8")
 
 async def main():
+    print(f"\n\n{'='*60}")
+    print(f"=== RUN STARTED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
+    print(f"{'='*60}")
     print("=== Agentic Itinerary System (Phase 4: Strict Domain) Initializing ===")
     
     bus = EventBus()
     
-    start_time = datetime.now()
+    # Start at 9:00 AM for realistic daytime simulation
+    start_time = datetime.now().replace(hour=9, minute=0, second=0, microsecond=0)
+    
     initial_tasks = [
         Task(id="1", title="Breakfast at Tiffany's", start_time=start_time + timedelta(hours=1), end_time=start_time + timedelta(hours=2), location="Downtown"),
         Task(id="2", title="Museum Tour", start_time=start_time + timedelta(hours=3), end_time=start_time + timedelta(hours=5), location="Museum District"),

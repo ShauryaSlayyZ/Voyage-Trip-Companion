@@ -27,22 +27,10 @@ class CLICompanionAgent(CompanionAgent):
             except ValueError:
                 print("Please enter a number.")
 
+from core.loader import load_itinerary_from_json
+
 def load_itinerary(filepath="e:/tbo/itinerary.json") -> List[Task]:
-    with open(filepath, "r") as f:
-        data = json.load(f)
-        tasks = []
-        for t in data:
-            # Map 'description' to 'title' if needed for legacy json
-            if "description" in t and "title" not in t:
-                t["title"] = t.pop("description")
-                
-            t["start_time"] = datetime.fromisoformat(t["start_time"])
-            t["end_time"] = datetime.fromisoformat(t["end_time"])
-            if "status" in t:
-                t["status"] = TaskStatus(t["status"])
-            
-            tasks.append(Task(**t))
-        return tasks
+    return load_itinerary_from_json(filepath).tasks
 
 async def interactive_loop():
     print("=== 🎮 Agentic System: Interactive Mode (Strict Domain) ===")

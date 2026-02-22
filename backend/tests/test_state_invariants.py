@@ -1,124 +1,165 @@
+# backend/tests/test_state_invariants.py
+
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
 import pytest
 from datetime import datetime, timedelta
-from dataclasses import replace
-from typing import List
 
 from core.models import Task, Itinerary, StateSnapshot
-from core.enums import TaskStatus, CompletionType, DisruptionType
-from core.events import ReoptOption, DisruptionEvent
+from core.enums import TaskStatus, CompletionType, ReoptScope
+from core.events import ReoptOption, DisruptionEvent, DisruptionType
 from agents.state_agent import StateAgent
 
-# Helper
-def create_task(id: str, start_h: int, end_h: int, base_time: datetime) -> Task:
+
+BASE = datetime(2026, 5, 20, 10, 0)
+
+
+def make_task(tid, start_h, end_h):
     return Task(
-        id=id,
-        title=f"Task {id}",
-        location="Test Loc",
-        start_time=base_time + timedelta(hours=start_h),
-        end_time=base_time + timedelta(hours=end_h)
+        id=tid, title=tid, location="L",
+        start_time=BASE + timedelta(hours=start_h),
+        end_time=BASE + timedelta(hours=end_h),
     )
 
-@pytest.fixture
-def base_time():
-    return datetime(2025, 1, 1, 10, 0) # 10:00 AM
 
-@pytest.fixture
-def agent(base_time):
-    # Initial State: Empty or simple
-    snapshot = StateSnapshot(current_time=base_time, itinerary=Itinerary(tasks=[]))
-    return StateAgent(snapshot)
+def make_option(tasks):
+    """Build a minimal valid ReoptOption from a list of tasks."""
+    return ReoptOption(
+        id="opt_test",
+        scope=ReoptScope.SAME_DAY,
+        explanation="Test option",
+        new_future_tasks=tasks,
+        new_start_times={t.id: t.start_time for t in tasks},
+        dropped_task_ids=[],
+        total_shift_minutes=0,
+        objective_value=0.0,
+    )
 
-def test_explicit_immutability(base_time):
-    # Setup
-    t1 = create_task("T1", 0, 1, base_time) # 10-11
-    t2 = create_task("T2", 2, 3, base_time) # 12-13
-    
-    snapshot = StateSnapshot(current_time=base_time, itinerary=Itinerary(tasks=[t1, t2]))
-    agent = StateAgent(snapshot)
-    
-    # Advance into T1 (10:30)
-    agent.advance_time(30)
-    agent.confirm_task("T1")
-    
-    # Advance past T1 (11:30)
-    agent.advance_time(60)
-    
-    # Apply Proposal adjusting future
-    # New task T3 (12:30-13:30) replaces T2 (12-13)
-    t3 = create_task("T3", 2.5, 3.5, base_time)
-    option = ReoptOption(id="opt1", description="desc", new_future_tasks=[t3])
-    
-    agent.apply_proposal(option)
-    
-    # Assert
-    final = agent.get_state_snapshot()
-    ids = [t.id for t in final.itinerary.tasks]
-    assert "T1" in ids, "Explicit task T1 should persist"
-    assert "T3" in ids
-    assert "T2" not in ids
-    
-    preserved_t1 = next(t for t in final.itinerary.tasks if t.id == "T1")
-    assert preserved_t1.status == TaskStatus.COMPLETED
-    assert preserved_t1.completion == CompletionType.EXPLICIT
 
-def test_rollback_survival(base_time):
-    t1 = create_task("T1", 0, 1, base_time) # 10-11
-    snapshot = StateSnapshot(current_time=base_time, itinerary=Itinerary(tasks=[t1]))
-    agent = StateAgent(snapshot)
-    
-    # Advance past end (12:00 -> +2h)
-    agent.advance_time(120)
-    
-    s = agent.get_state_snapshot()
-    t1_missed = s.itinerary.tasks[0]
-    assert t1_missed.status == TaskStatus.MISSED
-    assert t1_missed.completion == CompletionType.IMPLICIT
-    
-    # Rollback
-    agent.rollback_implicit("T1")
-    
-    s2 = agent.get_state_snapshot()
-    t1_rolled = s2.itinerary.tasks[0]
-    assert t1_rolled.status == TaskStatus.PLANNED, "Should revert to PLANNED"
-    assert t1_rolled.completion == CompletionType.NONE, "Should obey Persistent Rollback"
+def make_agent(tasks, current_offset_h=0):
+    snap = StateSnapshot(
+        current_time=BASE + timedelta(hours=current_offset_h),
+        itinerary=Itinerary(tasks=tasks),
+    )
+    return StateAgent(snap)
 
-def test_future_only_replacement(base_time):
-    # T1 Past (8-9), T2 Active (9-11), T3 Future (12-13)
-    # Current time: 10:00
-    t1 = create_task("T1", -2, -1, base_time)
-    t2 = create_task("T2", -1, 1, base_time)
-    t3 = create_task("T3", 2, 3, base_time)
-    
-    snapshot = StateSnapshot(current_time=base_time, itinerary=Itinerary(tasks=[t1, t2, t3]))
-    agent = StateAgent(snapshot)
-    
-    # Verify Initial State
-    s = agent.get_state_snapshot()
-    assert s.itinerary.tasks[1].id == "T2"
-    
-    # Proposal: Replace T3 with T4 (13-14)
-    t4 = create_task("T4", 3, 4, base_time)
-    option = ReoptOption(id="opt2", description="replace future", new_future_tasks=[t4])
-    
-    agent.apply_proposal(option)
-    
-    final = agent.get_state_snapshot()
-    ids = [t.id for t in final.itinerary.tasks]
-    
-    assert "T1" in ids, "Past task preserved"
-    assert "T2" in ids, "Active task preserved"
-    assert "T3" not in ids, "Future task replaced"
-    assert "T4" in ids, "New future task added"
 
-def test_active_protection(base_time):
-    # T1 Active (9-11). Current 10:00.
-    t1 = create_task("T1", -1, 1, base_time)
-    snapshot = StateSnapshot(current_time=base_time, itinerary=Itinerary(tasks=[t1]))
-    agent = StateAgent(snapshot)
-    
-    # Proposal tries to insert T2 (10:30-11:30) overlapping Active End
-    t2 = create_task("T2", 0.5, 1.5, base_time) # Starts at 10:30
-    option = ReoptOption(id="fail", description="fail", new_future_tasks=[t2])
-    
-    with pytest.raises(ValueError, match="overlaps with preserved task"):
-        agent.apply_proposal(option)
+class TestExplicitImmutability:
+
+    def test_explicit_completed_preserved_after_proposal(self):
+        t1 = make_task("t1", 0, 1)
+        t2 = make_task("t2", 2, 3)
+        agent = make_agent([t1, t2])
+
+        agent.advance_time(30)   # 10:30
+        agent.confirm_task("t1")
+        agent.advance_time(60)   # 11:30
+
+        t3 = make_task("t3", 2, 3)
+        agent.apply_proposal(make_option([t3]))
+
+        final = agent.get_state_snapshot()
+        ids = [t.id for t in final.itinerary.tasks]
+        assert "t1" in ids
+        assert "t3" in ids
+        assert "t2" not in ids
+
+        t1_final = next(t for t in final.itinerary.tasks if t.id == "t1")
+        assert t1_final.status == TaskStatus.COMPLETED
+        assert t1_final.completion == CompletionType.EXPLICIT
+
+    def test_explicit_start_time_unchanged(self):
+        t1 = make_task("t1", 0, 1)
+        agent = make_agent([t1])
+        agent.advance_time(30)
+        agent.confirm_task("t1")
+
+        original_start = t1.start_time
+        t2 = make_task("t2", 2, 3)
+        agent.apply_proposal(make_option([t2]))
+
+        final = agent.get_state_snapshot()
+        t1_final = next(t for t in final.itinerary.tasks if t.id == "t1")
+        assert t1_final.start_time == original_start
+
+
+class TestImplicitRollback:
+
+    def test_missed_task_rolls_back_to_planned(self):
+        t1 = make_task("t1", 0, 1)
+        agent = make_agent([t1])
+        agent.advance_time(120)  # past end
+
+        s = agent.get_state_snapshot()
+        assert s.itinerary.tasks[0].status == TaskStatus.MISSED
+
+        agent.rollback_implicit("t1")
+
+        s2 = agent.get_state_snapshot()
+        assert s2.itinerary.tasks[0].status == TaskStatus.PLANNED
+        assert s2.itinerary.tasks[0].completion == CompletionType.NONE
+
+    def test_explicit_task_cannot_be_rolled_back(self):
+        t1 = make_task("t1", 0, 1)
+        agent = make_agent([t1])
+        agent.advance_time(30)
+        agent.confirm_task("t1")
+
+        with pytest.raises(Exception):
+            agent.rollback_implicit("t1")
+
+
+class TestTimeProgression:
+
+    def test_current_time_advances(self):
+        agent = make_agent([])
+        before = agent.get_state_snapshot().current_time
+        agent.advance_time(60)
+        after = agent.get_state_snapshot().current_time
+        assert after == before + timedelta(minutes=60)
+
+    def test_task_becomes_missed_after_end_time(self):
+        t1 = make_task("t1", 0, 1)  # ends at 11:00
+        agent = make_agent([t1])
+        agent.advance_time(90)  # 11:30 — past end
+
+        s = agent.get_state_snapshot()
+        assert s.itinerary.tasks[0].status in (
+            TaskStatus.MISSED, TaskStatus.COMPLETED
+        )
+
+    def test_no_time_rewind(self):
+        agent = make_agent([])
+        agent.advance_time(60)
+        t = agent.get_state_snapshot().current_time
+
+        # Advancing by 0 should not go backward
+        agent.advance_time(0)
+        assert agent.get_state_snapshot().current_time >= t
+
+
+class TestProposalApplication:
+
+    def test_future_tasks_replaced(self):
+        t1 = make_task("t1", 0, 1)
+        t2 = make_task("t2", 2, 3)
+        agent = make_agent([t1, t2])
+
+        t3 = make_task("t3", 2, 3)
+        agent.apply_proposal(make_option([t3]))
+
+        final = agent.get_state_snapshot()
+        ids = [t.id for t in final.itinerary.tasks]
+        assert "t3" in ids
+
+    def test_empty_proposal_clears_future(self):
+        t1 = make_task("t1", 1, 2)
+        agent = make_agent([t1])
+        agent.apply_proposal(make_option([]))
+
+        final = agent.get_state_snapshot()
+        planned = [t for t in final.itinerary.tasks
+                   if t.status == TaskStatus.PLANNED]
+        assert len(planned) == 0

@@ -7,11 +7,17 @@ from core.models import StateSnapshot, Task, Itinerary
 from core.events import ReoptOption
 
 class StateAgent:
-    def __init__(self, initial_snapshot: StateSnapshot):
-        self._current_time = initial_snapshot.current_time
-        self._tasks: List[Task] = [
-            replace(t) for t in initial_snapshot.itinerary.tasks
-        ]
+    def __init__(self, initial_snapshot: StateSnapshot = None, itinerary: Itinerary = None):
+        if initial_snapshot is not None:
+            self._current_time = initial_snapshot.current_time
+            self._tasks: List[Task] = [
+                replace(t) for t in initial_snapshot.itinerary.tasks
+            ]
+        elif itinerary is not None:
+            self._current_time = datetime.utcnow()
+            self._tasks: List[Task] = [replace(t) for t in itinerary.tasks]
+        else:
+            raise ValueError("Provide either initial_snapshot or itinerary")
         self._sort_tasks()
 
     def _sort_tasks(self):
@@ -96,44 +102,76 @@ class StateAgent:
         # Next update_time_status loop will see NONE + after end -> keep current status (PLANNED).
 
     def apply_proposal(self, option: ReoptOption) -> None:
-        # Preservation logic (Same as before)
+        """
+        Apply a ReoptOption to the live itinerary.
+
+        Supports both the legacy `new_future_tasks` field and the new
+        `new_start_times` / `dropped_task_ids` fields.
+        """
+        # ---- Determine which tasks survive and at what times ----
+        dropped_ids = set(getattr(option, 'dropped_task_ids', []))
+
+        # Preserve past / active tasks (they cannot be touched)
         preserved_tasks = []
         for t in self._tasks:
-            # Preserve PAST (end <= current) OR ACTIVE (start <= current < end)
-            is_past = t.end_time <= self._current_time
+            is_past   = t.end_time   <= self._current_time
             is_active = t.start_time <= self._current_time < t.end_time
             if is_past or is_active:
                 preserved_tasks.append(t)
-        
-        # History Protection (Max Explicit End)
+
+        # ---- Build future task list ----
+        new_start_times: dict = getattr(option, 'new_start_times', {})
+
+        if new_start_times:
+            # New-style option: reconstruct future tasks from new_start_times
+            from datetime import timedelta
+            new_future: List[Task] = []
+            for t in self._tasks:
+                if t.end_time <= self._current_time or (
+                    t.start_time <= self._current_time < t.end_time
+                ):
+                    continue  # already in preserved_tasks
+                if t.id in dropped_ids:
+                    continue  # dropped by optimiser
+                if t.id in new_start_times:
+                    new_start = new_start_times[t.id]
+                    duration  = t.duration_minutes
+                    new_end   = new_start + timedelta(minutes=duration)
+                    new_t = replace(
+                        t,
+                        start_time=new_start,
+                        end_time=new_end,
+                        time_window_start=new_start,
+                        time_window_end=new_end,
+                    )
+                    new_future.append(new_t)
+                else:
+                    # Task not rescheduled — keep original times
+                    new_future.append(replace(t))
+        else:
+            # Legacy-style option: use new_future_tasks list directly
+            new_future = list(getattr(option, 'new_future_tasks', []))
+
+        # ---- Validate start times ----
         max_explicit_end = self._current_time
         for t in preserved_tasks:
-            if t.completion == CompletionType.EXPLICIT:
-                if t.end_time > max_explicit_end:
-                    max_explicit_end = t.end_time
-        
-        # Validation
-        for new_t in option.new_future_tasks:
-            if new_t.start_time <= self._current_time:
-                 raise ValueError(f"New task {new_t.id} starts in past/present")
-            if new_t.start_time < max_explicit_end:
-                 raise ValueError(f"New task {new_t.id} overlaps with explicit history")
-            for p in preserved_tasks:
-                if new_t.start_time < p.end_time:
-                     raise ValueError(f"New task {new_t.id} overlaps with preserved task {p.id}")
+            if t.completion == CompletionType.EXPLICIT and t.end_time > max_explicit_end:
+                max_explicit_end = t.end_time
 
-        new_list = preserved_tasks + option.new_future_tasks
+        for new_t in new_future:
+            if new_t.start_time <= self._current_time:
+                raise ValueError(f"Rescheduled task {new_t.id} starts in past/present")
+            if new_t.start_time < max_explicit_end:
+                raise ValueError(f"Rescheduled task {new_t.id} overlaps explicit history")
+
+        new_list = preserved_tasks + new_future
         new_list.sort(key=lambda x: x.start_time)
-        
-        # Rule 3: STRICT Ordering Invariant (Monotonic increasing intervals)
+
+        # ---- Strict no-overlap invariant ----
         for i in range(len(new_list) - 1):
-            t1 = new_list[i]
-            t2 = new_list[i+1]
+            t1, t2 = new_list[i], new_list[i + 1]
             if t1.end_time > t2.start_time:
-                 raise ValueError(f"Overlapping tasks: {t1.id} vs {t2.id}")
-            # Ensure strict ordering
-            if t1.start_time > t2.start_time: # Should be sorted
-                 raise ValueError("Ordering invariant violated")
+                raise ValueError(f"Overlapping tasks after apply: {t1.id} vs {t2.id}")
 
         self._tasks = new_list
         for t in self._tasks:

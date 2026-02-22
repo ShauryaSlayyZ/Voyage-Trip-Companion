@@ -69,7 +69,7 @@ class OrchestratorAgent:
             print("[Orchestrator] ...Waiting for user...")
             choice_idx = await self.companion.get_user_choice()
             selected_option = proposal.options[choice_idx]
-            print(f"[Orchestrator] User selected: {selected_option.description}")
+            print(f"[Orchestrator] User selected: {selected_option.explanation}")
             
         else:
             print("[Orchestrator] ✅ Auto-applying best option.")

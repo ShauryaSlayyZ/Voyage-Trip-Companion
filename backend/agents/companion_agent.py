@@ -9,7 +9,7 @@ class CompanionAgent:
     async def present_options(self, proposal: ReoptimizationProposal):
         print("\n[Companion] 🤖 We have a situation. Here are your options:")
         for idx, option in enumerate(proposal.options):
-            print(f"   Option {idx+1}: {option.description}")
+            print(f"   Option {idx+1}: {option.explanation}")
             # Score/Reason removed from ReoptOption model as per strict requirements?
             # "ReoptOption: id, description, new_future_tasks". 
             # User output: "must NOT include past explicit tasks".
