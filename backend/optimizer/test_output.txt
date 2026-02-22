@@ -1,0 +1,13 @@
+
+============================================================
+Traceback (most recent call last):
+  File "C:\diske\Voyage-Trip-Companion\backend\optimizer\test_disruption.py", line 190, in <module>
+    main()
+    ~~~~^^
+  File "C:\diske\Voyage-Trip-Companion\backend\optimizer\test_disruption.py", line 62, in main
+    print("\U0001f9ea DISRUPTION RE-OPTIMIZATION TEST")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\U0001f9ea' in position 0: character maps to <undefined>
